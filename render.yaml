@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: smartbiz-ai
+    runtime: node
+    plan: free
+    buildCommand: "cd backend && npm install && cd ../frontend && npm install && npm run build"
+    startCommand: "cd backend && node server.js"
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
