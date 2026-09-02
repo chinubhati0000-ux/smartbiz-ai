@@ -2,14 +2,12 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Button, ErrorBanner, Input } from '../components/ui';
-
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const [form, setForm] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
@@ -23,7 +21,6 @@ export default function Login() {
       setLoading(false);
     }
   };
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-ledger-paper px-4">
       <div className="w-full max-w-md">
@@ -56,6 +53,11 @@ export default function Login() {
             {loading ? 'Signing in...' : 'Log in'}
           </Button>
         </form>
+        <p className="text-center text-sm mt-2">
+          <Link to="/forgot-password" className="text-ledger-teal font-medium">
+            Forgot password?
+          </Link>
+        </p>
         <p className="text-center text-sm text-ledger-ink/60 mt-4">
           New here?{' '}
           <Link to="/register" className="text-ledger-teal font-medium">
