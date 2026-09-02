@@ -2,10 +2,11 @@ import React from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
-
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import Dashboard from './pages/Dashboard';
 import Products from './pages/Products';
 import Sales from './pages/Sales';
@@ -13,20 +14,20 @@ import Expenses from './pages/Expenses';
 import Analytics from './pages/Analytics';
 import Insights from './pages/Insights';
 import BusinessProfile from './pages/BusinessProfile';
-
 function ProtectedRoute({ children }) {
   const { user } = useAuth();
   const hasToken = localStorage.getItem('smartbiz_token');
   if (!user && !hasToken) return <Navigate to="/login" replace />;
   return <Layout>{children}</Layout>;
 }
-
 function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route
         path="/dashboard"
         element={
@@ -87,7 +88,6 @@ function AppRoutes() {
     </Routes>
   );
 }
-
 export default function App() {
   return (
     <AuthProvider>
