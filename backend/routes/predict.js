@@ -1,17 +1,13 @@
 const express = require('express');
-const db = require('../db');
+const { pool } = require('../db');
 const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 router.use(authMiddleware);
 
-function getBusinessId(req) {
-  const biz = db.findBusinessByUserId(req.userId);
-  return biz ? biz.id : null;
-}
-
-function dayKey(isoString) {
-  return isoString.slice(0, 10); // "YYYY-MM-DD"
+async function getBusinessId(userId) {
+  const result = await pool.query('SELECT id FROM businesses WHERE user_id = $1', [userId]);
+  return result.rows[0] ? result.rows[0].id : null;
 }
 
 // Simple linear regression: y = a + b*x, fit with least squares.
@@ -35,70 +31,74 @@ function linearRegression(points) {
 
 // GET /predict -> predicts next week's total sales and next month's revenue
 // based on historical daily sales, using linear regression as a simple
-// trend model. Needs at least a few days of history to produce a
-// meaningful trend rather than a flat guess.
-router.get('/', (req, res) => {
-  const businessId = getBusinessId(req);
-  const data = db.getAll();
+// trend model.
+router.get('/', async (req, res) => {
+  try {
+    const businessId = await getBusinessId(req.userId);
 
-  const products = data.products.filter((p) => p.business_id === businessId);
-  const sales = data.sales.filter((s) => s.business_id === businessId);
+    const dailySalesResult = await pool.query(
+      `SELECT to_char(sale_date, 'YYYY-MM-DD') AS day, SUM(total_amount) AS revenue
+       FROM sales WHERE business_id = $1
+       GROUP BY day ORDER BY day ASC`,
+      [businessId]
+    );
+    const dailySales = dailySalesResult.rows.map((d) => ({ day: d.day, revenue: Number(d.revenue) }));
 
-  const dailyMap = {};
-  sales.forEach((s) => {
-    const d = dayKey(s.sale_date);
-    dailyMap[d] = (dailyMap[d] || 0) + s.total_amount;
-  });
-  const dailySales = Object.keys(dailyMap)
-    .sort()
-    .map((day) => ({ day, revenue: dailyMap[day] }));
+    if (dailySales.length < 3) {
+      return res.json({
+        sufficientData: false,
+        message: 'Record at least a few days of sales to unlock predictions.',
+        nextWeekRevenue: null,
+        nextMonthRevenue: null,
+        history: dailySales
+      });
+    }
 
-  if (dailySales.length < 3) {
-    return res.json({
-      sufficientData: false,
-      message: 'Record at least a few days of sales to unlock predictions.',
-      nextWeekRevenue: null,
-      nextMonthRevenue: null,
+    const points = dailySales.map((d, i) => ({ x: i, y: d.revenue }));
+    const { a, b } = linearRegression(points);
+
+    const lastX = points[points.length - 1].x;
+    const predictDay = (offset) => Math.max(0, a + b * (lastX + offset));
+
+    let nextWeekRevenue = 0;
+    for (let i = 1; i <= 7; i++) nextWeekRevenue += predictDay(i);
+
+    let nextMonthRevenue = 0;
+    for (let i = 1; i <= 30; i++) nextMonthRevenue += predictDay(i);
+
+    const productsResult = await pool.query('SELECT id, name FROM products WHERE business_id = $1', [
+      businessId
+    ]);
+
+    const productDemand = [];
+    for (const p of productsResult.rows) {
+      const rowsResult = await pool.query(
+        `SELECT to_char(sale_date, 'YYYY-MM-DD') AS day, SUM(quantity) AS qty
+         FROM sales WHERE business_id = $1 AND product_id = $2 GROUP BY day ORDER BY day ASC`,
+        [businessId, p.id]
+      );
+      const rows = rowsResult.rows;
+      if (rows.length === 0) {
+        productDemand.push({ id: p.id, name: p.name, predictedNextWeekUnits: 0 });
+        continue;
+      }
+      const totalQty = rows.reduce((s, r) => s + Number(r.qty), 0);
+      const avgDaily = totalQty / rows.length;
+      productDemand.push({ id: p.id, name: p.name, predictedNextWeekUnits: Math.round(avgDaily * 7) });
+    }
+
+    res.json({
+      sufficientData: true,
+      trendDirection: b > 0 ? 'up' : b < 0 ? 'down' : 'flat',
+      nextWeekRevenue: Number(nextWeekRevenue.toFixed(2)),
+      nextMonthRevenue: Number(nextMonthRevenue.toFixed(2)),
+      productDemand,
       history: dailySales
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not generate prediction' });
   }
-
-  const points = dailySales.map((d, i) => ({ x: i, y: d.revenue }));
-  const { a, b } = linearRegression(points);
-
-  const lastX = points[points.length - 1].x;
-  const predictDay = (offset) => Math.max(0, a + b * (lastX + offset));
-
-  let nextWeekRevenue = 0;
-  for (let i = 1; i <= 7; i++) nextWeekRevenue += predictDay(i);
-
-  let nextMonthRevenue = 0;
-  for (let i = 1; i <= 30; i++) nextMonthRevenue += predictDay(i);
-
-  // Per-product demand prediction: average daily units over history, projected forward
-  const productDemand = products.map((p) => {
-    const productDailyMap = {};
-    sales
-      .filter((s) => s.product_id === p.id)
-      .forEach((s) => {
-        const d = dayKey(s.sale_date);
-        productDailyMap[d] = (productDailyMap[d] || 0) + s.quantity;
-      });
-    const dayCount = Object.keys(productDailyMap).length;
-    if (dayCount === 0) return { id: p.id, name: p.name, predictedNextWeekUnits: 0 };
-    const totalQty = Object.values(productDailyMap).reduce((s, v) => s + v, 0);
-    const avgDaily = totalQty / dayCount;
-    return { id: p.id, name: p.name, predictedNextWeekUnits: Math.round(avgDaily * 7) };
-  });
-
-  res.json({
-    sufficientData: true,
-    trendDirection: b > 0 ? 'up' : b < 0 ? 'down' : 'flat',
-    nextWeekRevenue: Number(nextWeekRevenue.toFixed(2)),
-    nextMonthRevenue: Number(nextMonthRevenue.toFixed(2)),
-    productDemand,
-    history: dailySales
-  });
 });
 
 module.exports = router;

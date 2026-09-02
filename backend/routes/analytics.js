@@ -1,107 +1,158 @@
 const express = require('express');
-const db = require('../db');
+const { pool } = require('../db');
 const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 router.use(authMiddleware);
 
-function getBusinessId(req) {
-  const biz = db.findBusinessByUserId(req.userId);
-  return biz ? biz.id : null;
+async function getBusinessId(userId) {
+  const result = await pool.query('SELECT id FROM businesses WHERE user_id = $1', [userId]);
+  return result.rows[0] ? result.rows[0].id : null;
 }
 
-function monthKey(isoString) {
-  return isoString.slice(0, 7); // "YYYY-MM"
-}
+router.get('/', async (req, res) => {
+  try {
+    const businessId = await getBusinessId(req.userId);
 
-router.get('/', (req, res) => {
-  const businessId = getBusinessId(req);
-  const data = db.getAll();
+    const totalRevenueResult = await pool.query(
+      'SELECT COALESCE(SUM(total_amount), 0) AS total FROM sales WHERE business_id = $1',
+      [businessId]
+    );
+    const totalRevenue = Number(totalRevenueResult.rows[0].total);
 
-  const products = data.products.filter((p) => p.business_id === businessId);
-  const sales = data.sales.filter((s) => s.business_id === businessId);
-  const expenses = data.expenses.filter((e) => e.business_id === businessId);
+    const totalExpensesResult = await pool.query(
+      'SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE business_id = $1',
+      [businessId]
+    );
+    const totalExpenses = Number(totalExpensesResult.rows[0].total);
 
-  const productById = Object.fromEntries(products.map((p) => [p.id, p]));
+    const totalSalesResult = await pool.query(
+      'SELECT COUNT(*) AS count FROM sales WHERE business_id = $1',
+      [businessId]
+    );
+    const totalSales = Number(totalSalesResult.rows[0].count);
 
-  const totalRevenue = sales.reduce((sum, s) => sum + s.total_amount, 0);
-  const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
-  const cogs = sales.reduce((sum, s) => {
-    const p = productById[s.product_id];
-    return sum + (p ? p.cost_price * s.quantity : 0);
-  }, 0);
-  const netProfit = totalRevenue - cogs - totalExpenses;
+    const totalProductsResult = await pool.query(
+      'SELECT COUNT(*) AS count FROM products WHERE business_id = $1',
+      [businessId]
+    );
+    const totalProducts = Number(totalProductsResult.rows[0].count);
 
-  const lowStockProducts = products.filter((p) => p.stock_quantity <= p.low_stock_limit);
+    const cogsResult = await pool.query(
+      `SELECT COALESCE(SUM(sales.quantity * products.cost_price), 0) AS total
+       FROM sales JOIN products ON sales.product_id = products.id
+       WHERE sales.business_id = $1`,
+      [businessId]
+    );
+    const cogs = Number(cogsResult.rows[0].total);
 
-  // Monthly revenue / expenses / cogs, merged
-  const monthMap = {};
-  const ensureMonth = (m) => {
-    if (!monthMap[m]) monthMap[m] = { month: m, revenue: 0, expenses: 0, cogs: 0 };
-    return monthMap[m];
-  };
-  sales.forEach((s) => {
-    const m = ensureMonth(monthKey(s.sale_date));
-    m.revenue += s.total_amount;
-    const p = productById[s.product_id];
-    if (p) m.cogs += p.cost_price * s.quantity;
-  });
-  expenses.forEach((e) => {
-    const m = ensureMonth(monthKey(e.expense_date));
-    m.expenses += e.amount;
-  });
+    const netProfit = totalRevenue - cogs - totalExpenses;
 
-  const sortedMonths = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
-  const monthlyRevenue = sortedMonths.slice(-6).map((m) => ({ month: m.month, revenue: m.revenue }));
-  const monthlyExpenses = sortedMonths
-    .slice(-6)
-    .map((m) => ({ month: m.month, expenses: m.expenses }));
-  const monthlyProfit = sortedMonths
-    .slice(-6)
-    .map((m) => ({ month: m.month, profit: m.revenue - m.cogs - m.expenses }));
+    const lowStockResult = await pool.query(
+      'SELECT * FROM products WHERE business_id = $1 AND stock_quantity <= low_stock_limit',
+      [businessId]
+    );
 
-  // Top-selling products by revenue
-  const productStats = {};
-  sales.forEach((s) => {
-    if (!productStats[s.product_id]) {
-      productStats[s.product_id] = { units_sold: 0, revenue: 0 };
-    }
-    productStats[s.product_id].units_sold += s.quantity;
-    productStats[s.product_id].revenue += s.total_amount;
-  });
+    const monthlyRevenueResult = await pool.query(
+      `SELECT to_char(sale_date, 'YYYY-MM') AS month, SUM(total_amount) AS revenue
+       FROM sales WHERE business_id = $1
+       GROUP BY month ORDER BY month DESC LIMIT 6`,
+      [businessId]
+    );
+    const monthlyRevenue = monthlyRevenueResult.rows
+      .map((r) => ({ month: r.month, revenue: Number(r.revenue) }))
+      .reverse();
 
-  const topProducts = Object.entries(productStats)
-    .map(([id, stats]) => ({
-      id: Number(id),
-      name: productById[id] ? productById[id].name : 'Unknown',
-      ...stats
-    }))
-    .sort((a, b) => b.revenue - a.revenue)
-    .slice(0, 5);
+    const monthlyExpensesResult = await pool.query(
+      `SELECT to_char(expense_date, 'YYYY-MM') AS month, SUM(amount) AS expenses
+       FROM expenses WHERE business_id = $1
+       GROUP BY month ORDER BY month DESC LIMIT 6`,
+      [businessId]
+    );
+    const monthlyExpenses = monthlyExpensesResult.rows
+      .map((r) => ({ month: r.month, expenses: Number(r.expenses) }))
+      .reverse();
 
-  const lowPerforming = products
-    .map((p) => ({
+    const monthlyCogsResult = await pool.query(
+      `SELECT to_char(sales.sale_date, 'YYYY-MM') AS month,
+              SUM(sales.quantity * products.cost_price) AS cogs
+       FROM sales JOIN products ON sales.product_id = products.id
+       WHERE sales.business_id = $1
+       GROUP BY month`,
+      [businessId]
+    );
+
+    const monthMap = {};
+    monthlyRevenue.forEach((r) => {
+      monthMap[r.month] = { month: r.month, revenue: r.revenue, expenses: 0, cogs: 0 };
+    });
+    monthlyExpenses.forEach((e) => {
+      if (!monthMap[e.month]) monthMap[e.month] = { month: e.month, revenue: 0, expenses: 0, cogs: 0 };
+      monthMap[e.month].expenses = e.expenses;
+    });
+    monthlyCogsResult.rows.forEach((c) => {
+      if (!monthMap[c.month]) monthMap[c.month] = { month: c.month, revenue: 0, expenses: 0, cogs: 0 };
+      monthMap[c.month].cogs = Number(c.cogs);
+    });
+
+    const monthlyProfit = Object.values(monthMap)
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .map((m) => ({ month: m.month, profit: m.revenue - m.cogs - m.expenses }));
+
+    const topProductsResult = await pool.query(
+      `SELECT products.id, products.name, SUM(sales.quantity) AS units_sold, SUM(sales.total_amount) AS revenue
+       FROM sales JOIN products ON sales.product_id = products.id
+       WHERE sales.business_id = $1
+       GROUP BY products.id ORDER BY revenue DESC LIMIT 5`,
+      [businessId]
+    );
+    const topProducts = topProductsResult.rows.map((p) => ({
       id: p.id,
       name: p.name,
-      units_sold: productStats[p.id]?.units_sold || 0,
-      revenue: productStats[p.id]?.revenue || 0
-    }))
-    .sort((a, b) => a.units_sold - b.units_sold)
-    .slice(0, 5);
+      units_sold: Number(p.units_sold),
+      revenue: Number(p.revenue)
+    }));
 
-  res.json({
-    totalRevenue,
-    totalExpenses,
-    netProfit,
-    totalSales: sales.length,
-    totalProducts: products.length,
-    lowStockProducts,
-    monthlyRevenue,
-    monthlyExpenses,
-    monthlyProfit,
-    topProducts,
-    lowPerforming
-  });
+    const allProductsResult = await pool.query('SELECT id, name FROM products WHERE business_id = $1', [
+      businessId
+    ]);
+    const soldResult = await pool.query(
+      `SELECT products.id, SUM(sales.quantity) AS units_sold, SUM(sales.total_amount) AS revenue
+       FROM sales JOIN products ON sales.product_id = products.id
+       WHERE sales.business_id = $1 GROUP BY products.id`,
+      [businessId]
+    );
+    const soldMap = {};
+    soldResult.rows.forEach((row) => {
+      soldMap[row.id] = { units_sold: Number(row.units_sold), revenue: Number(row.revenue) };
+    });
+    const lowPerforming = allProductsResult.rows
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        units_sold: soldMap[p.id]?.units_sold || 0,
+        revenue: soldMap[p.id]?.revenue || 0
+      }))
+      .sort((a, b) => a.units_sold - b.units_sold)
+      .slice(0, 5);
+
+    res.json({
+      totalRevenue,
+      totalExpenses,
+      netProfit,
+      totalSales,
+      totalProducts,
+      lowStockProducts: lowStockResult.rows,
+      monthlyRevenue,
+      monthlyExpenses,
+      monthlyProfit,
+      topProducts,
+      lowPerforming
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not load analytics' });
+  }
 });
 
 module.exports = router;
