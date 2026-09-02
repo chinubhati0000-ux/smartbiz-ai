@@ -2,7 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
 
+const { initSchema } = require('./db');
 const authRoutes = require('./routes/auth');
 const businessRoutes = require('./routes/business');
 const productRoutes = require('./routes/products');
@@ -15,6 +17,28 @@ const predictRoutes = require('./routes/predict');
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// General limiter: protects against overall abuse/scraping across the API.
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 300, // 300 requests per IP per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again in a few minutes.' }
+});
+
+// Strict limiter: specifically for login/register/password-reset, where
+// brute-forcing or spamming attempts are the real risk.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 attempts per IP per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Please wait 15 minutes and try again.' }
+});
+
+app.use('/api/', generalLimiter);
+app.use('/api/auth/', authLimiter);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
@@ -45,6 +69,14 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`SmartBiz AI backend running on http://localhost:${PORT}`);
-});
+
+initSchema()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`SmartBiz AI backend running on http://localhost:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to initialize database schema:', err);
+    process.exit(1);
+  });
