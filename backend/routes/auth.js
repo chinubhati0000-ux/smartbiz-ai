@@ -101,17 +101,12 @@ router.post('/login', async (req, res) => {
   }
 });
 
-module.exports = router;
-
 router.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
   if (!email) {
     return res.status(400).json({ error: 'Email is required' });
   }
 
-  // Always respond the same way whether or not the account exists --
-  // this prevents an attacker from using this endpoint to check which
-  // emails are registered.
   const genericResponse = {
     message: 'If an account exists for that email, a password reset link has been sent.'
   };
@@ -123,7 +118,7 @@ router.post('/forgot-password', async (req, res) => {
 
     if (user) {
       const token = crypto.randomBytes(32).toString('hex');
-      const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
+      const expires = new Date(Date.now() + 60 * 60 * 1000);
 
       await pool.query('UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE id = $3', [
         token,
@@ -137,8 +132,6 @@ router.post('/forgot-password', async (req, res) => {
       try {
         await sendPasswordResetEmail(normalizedEmail, resetUrl);
       } catch (emailErr) {
-        // Log but don't reveal to the caller whether sending succeeded --
-        // keeps the generic response consistent either way.
         console.error('Failed to send password reset email:', emailErr);
       }
     }
@@ -183,3 +176,5 @@ router.post('/reset-password', async (req, res) => {
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
+
+module.exports = router;
