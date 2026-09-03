@@ -21,7 +21,7 @@ export default function Expenses() {
 
   const monthlyTotal = expenses
     .filter((e) => new Date(e.expense_date).getMonth() === new Date().getMonth())
-    .reduce((sum, e) => sum + e.amount, 0);
+    .reduce((sum, e) => sum + Number(e.amount), 0);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -103,7 +103,7 @@ export default function Expenses() {
                 {expenses.map((ex) => (
                   <tr key={ex.id} className="border-b border-ledger-line/60">
                     <td className="py-2 pr-4 font-medium">{ex.category}</td>
-                    <td className="py-2 pr-4 ledger-number text-ledger-rust">₹{ex.amount.toFixed(2)}</td>
+                    <td className="py-2 pr-4 ledger-number text-ledger-rust">₹{Number(ex.amount).toFixed(2)}</td>
                     <td className="py-2 pr-4 text-ledger-ink/60">{ex.description || '—'}</td>
                     <td className="py-2 pr-4 text-ledger-ink/60">{new Date(ex.expense_date).toLocaleDateString()}</td>
                     <td className="py-2 pr-4 text-right">
