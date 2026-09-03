@@ -99,7 +99,7 @@ export default function Sales() {
                   <tr key={s.id} className="border-b border-ledger-line/60">
                     <td className="py-2 pr-4 font-medium">{s.product_name}</td>
                     <td className="py-2 pr-4 ledger-number">{s.quantity}</td>
-                    <td className="py-2 pr-4 ledger-number text-ledger-teal">₹{s.total_amount.toFixed(2)}</td>
+                    <td className="py-2 pr-4 ledger-number text-ledger-teal">₹{Number(s.total_amount).toFixed(2)}</td>
                     <td className="py-2 pr-4 text-ledger-ink/60">{new Date(s.sale_date).toLocaleString()}</td>
                   </tr>
                 ))}
